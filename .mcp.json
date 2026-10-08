@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gstack-browser": {
+      "type": "http",
+      "url": "${GSTACK_MCP_URL:-http://127.0.0.1:18080/gstack/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${GSTACK_REMOTE_KEY}"
+      }
+    }
+  }
+}

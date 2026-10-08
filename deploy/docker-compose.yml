@@ -77,7 +77,7 @@ services:
       GATEWAY_LISTEN: 8081
       GATEWAY_TARGET: gstack-browser-mcp:8081
     ports:
-      - "127.0.0.1:${ADMIN_PORT:-18081}:8081"     # local only; never published elsewhere
+      - "${BIND_ADDRESS:-0.0.0.0}:${ADMIN_PORT:-18081}:8081"     # BIND_ADDRESS (default 0.0.0.0) exposes this on the LAN; never via Funnel
     networks: [gstack-admin, gstack-outbound]
     mem_limit: 128m
     cap_drop: [ALL]
@@ -98,7 +98,7 @@ services:
       GATEWAY_LISTEN: 8080
       GATEWAY_TARGET: gstack-browser-mcp:8080
     ports:
-      - "127.0.0.1:${API_PORT:-18080}:8080"      # local only
+      - "${BIND_ADDRESS:-0.0.0.0}:${API_PORT:-18080}:8080"      # BIND_ADDRESS (default 0.0.0.0); set 127.0.0.1 for local only
     networks: [gstack-admin, gstack-outbound]
     mem_limit: 128m
     cap_drop: [ALL]
