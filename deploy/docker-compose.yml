@@ -1,0 +1,128 @@
+# GStack Browser MCP stack (plan §4.9). Config + secrets live in CONFIG_DIR (default
+# F:\DockerVolumes\GStackBrowserMCP), created by deploy/setup-host.ps1.
+#
+# Networks — the browser container has NO route to the LAN or the internet:
+#   gstack-edge    internal  shared with tailscale-funnel/nginx-proxy (public API + MCP via Funnel)
+#   gstack-egress  internal  browser server <-> egress-proxy (the only way out; blocks private IPs)
+#   gstack-admin   internal  admin-gateway <-> admin UI
+#   gstack-outbound normal   egress-proxy's internet access, admin-gateway's 127.0.0.1 port
+name: gstack-browser
+
+services:
+  gstack-browser-mcp:
+    image: gstack-browser-mcp:${IMAGE_TAG:-latest}
+    container_name: gstack-browser-mcp
+    restart: unless-stopped
+    init: true
+    shm_size: 2gb
+    mem_limit: 6g
+    cpus: 4
+    environment:
+      BASE_PATH: /gstack
+      MAX_SESSIONS: ${MAX_SESSIONS:-10}
+      DEFAULT_USER_MAX_SESSIONS: ${DEFAULT_USER_MAX_SESSIONS:-3}
+      SESSION_IDLE_TIMEOUT: ${SESSION_IDLE_TIMEOUT:-900000}
+      MIN_FREE_MEMORY_MB: 500
+      EGRESS_PROXY_URL: http://egress-proxy:4750
+      EGRESS_TOKEN_FILE: /run/secrets/egress_token
+      AUTH_PROFILE_KEY_FILE: /run/secrets/auth_profile_key
+      ALLOWED_URL_PATTERNS: ${ALLOWED_URL_PATTERNS:-}
+      AUDIT_RETENTION_DAYS: 30
+      LIVEVIEW_MODE: poll
+    secrets: [egress_token, auth_profile_key]
+    volumes:
+      - gstack-data:/data
+      - ${CONFIG_DIR:-F:/DockerVolumes/GStackBrowserMCP}/keys.json:/config/keys.json:ro
+    networks:
+      gstack-edge:
+        aliases: [gstack-browser-mcp]
+      gstack-egress: {}
+      gstack-admin: {}
+    cap_drop: [ALL]
+    # runuser (start each session as its own user), chown/cleanup of session files, pkill.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [egress-proxy]
+
+  egress-proxy:
+    image: gstack-browser-mcp:${IMAGE_TAG:-latest}
+    container_name: gstack-egress-proxy
+    restart: unless-stopped
+    init: true
+    command: ["bun", "src/egress/egressProxy.ts"]
+    environment:
+      EGRESS_PORT: 4750
+      EGRESS_TOKEN_FILE: /run/secrets/egress_token
+      EGRESS_ALLOW: ${EGRESS_ALLOW:-}
+    secrets: [egress_token]
+    networks:
+      gstack-egress:
+        aliases: [egress-proxy]
+      gstack-outbound: {}
+    mem_limit: 256m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "65534:65534"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4750"]
+      interval: 30s
+
+  admin-gateway:
+    image: gstack-browser-mcp:${IMAGE_TAG:-latest}
+    container_name: gstack-admin-gateway
+    restart: unless-stopped
+    init: true
+    command: ["bun", "src/egress/tcpGateway.ts"]
+    environment:
+      GATEWAY_LISTEN: 8081
+      GATEWAY_TARGET: gstack-browser-mcp:8081
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-18081}:8081"     # local only; never published elsewhere
+    networks: [gstack-admin, gstack-outbound]
+    mem_limit: 128m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "65534:65534"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
+      interval: 30s
+
+  api-gateway:
+    # API + MCP for clients on this machine only (Claude Code on SATVADELL). Remote users go through Funnel.
+    image: gstack-browser-mcp:${IMAGE_TAG:-latest}
+    container_name: gstack-api-gateway
+    restart: unless-stopped
+    init: true
+    command: ["bun", "src/egress/tcpGateway.ts"]
+    environment:
+      GATEWAY_LISTEN: 8080
+      GATEWAY_TARGET: gstack-browser-mcp:8080
+    ports:
+      - "127.0.0.1:${API_PORT:-18080}:8080"      # local only
+    networks: [gstack-admin, gstack-outbound]
+    mem_limit: 128m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "65534:65534"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 30s
+
+networks:
+  gstack-edge:
+    name: gstack-edge
+    internal: true
+  gstack-egress:
+    internal: true
+  gstack-admin:
+    internal: true
+  gstack-outbound: {}
+
+volumes:
+  gstack-data:
+
+secrets:
+  egress_token:
+    file: ${CONFIG_DIR:-F:/DockerVolumes/GStackBrowserMCP}/secrets/egress_token
+  auth_profile_key:
+    file: ${CONFIG_DIR:-F:/DockerVolumes/GStackBrowserMCP}/secrets/auth_profile_key

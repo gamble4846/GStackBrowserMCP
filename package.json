@@ -1,0 +1,26 @@
+{
+  "name": "gstack-browser-mcp",
+  "version": "0.1.0",
+  "description": "Remote, multi-session gstack browser: REST API for gstack skills (browse-remote), MCP server for agents, and an admin UI.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "egress": "bun src/egress/egressProxy.ts",
+    "gateway": "bun src/egress/tcpGateway.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests/unit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "ws": "^8.18.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.6.0"
+  }
+}

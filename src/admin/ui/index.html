@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GStack Browser Admin</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">GStack Browser <span class="muted">admin</span></div>
+    <nav id="tabs" hidden>
+      <button data-view="sessions" class="active">Sessions</button>
+      <button data-view="profiles">Auth profiles</button>
+    </nav>
+    <div class="right">
+      <span id="usage" class="muted"></span>
+      <span id="whoami" class="muted"></span>
+      <button id="logout" class="ghost" hidden>Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="login" class="card narrow" hidden>
+      <h1>Log in</h1>
+      <p class="muted">Use your API key. Admin keys see every session; other keys see only their own.</p>
+      <form id="loginForm">
+        <input id="key" type="password" autocomplete="off" placeholder="gsk_..." required>
+        <button type="submit">Log in</button>
+      </form>
+      <p id="loginError" class="error"></p>
+    </section>
+
+    <section id="sessions" hidden>
+      <div class="row between">
+        <h1>Sessions</h1>
+        <div class="row">
+          <label class="muted">idle &gt; <input id="idleMin" type="number" value="10" min="1" class="small"> min</label>
+          <button id="killIdle" class="danger ghost">Kill idle</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Session</th><th>Owner</th><th>Status</th><th>URL</th><th>Cmds</th><th>Idle</th><th>Tunnel</th><th></th></tr></thead>
+          <tbody id="sessionRows"><tr><td colspan="8" class="muted">No sessions.</td></tr></tbody>
+        </table>
+      </div>
+
+      <div id="detail" class="card" hidden>
+        <div class="row between">
+          <h2 id="detailTitle"></h2>
+          <div class="row">
+            <button data-tool="console" class="ghost">Console</button>
+            <button data-tool="network" class="ghost">Network</button>
+            <button data-tool="tabs" class="ghost">Tabs</button>
+            <button id="detailKill" class="danger">Kill session</button>
+            <button id="detailClose" class="ghost">Close</button>
+          </div>
+        </div>
+        <div class="grid">
+          <div>
+            <h3>Live view <span id="liveState" class="muted"></span></h3>
+            <div class="live"><img id="live" alt="Live view of the session's browser"></div>
+          </div>
+          <div>
+            <h3>Command timeline</h3>
+            <ol id="timeline" class="timeline"></ol>
+          </div>
+        </div>
+        <pre id="toolOut" hidden></pre>
+        <h3>Files</h3>
+        <ul id="files" class="files"></ul>
+      </div>
+    </section>
+
+    <section id="profiles" hidden>
+      <h1>Auth profiles</h1>
+      <p class="muted">Saved logins are encrypted and private to their owner. Values are never shown here.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Owner</th><th>Name</th><th>Cookies</th><th>Sites</th><th>Earliest expiry</th><th>Updated</th><th></th></tr></thead>
+          <tbody id="profileRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+.git
+node_modules
+spike
+Plans
+deploy
+client
+tests
+*.log

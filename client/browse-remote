@@ -1,0 +1,409 @@
+#!/usr/bin/env node
+// browse-remote: drop-in replacement for gstack's `browse` ($B) that drives a browser on a
+// remote gstack-browser-mcp server. Install it at <repo>/.claude/skills/gstack/browse/dist/browse
+// (gstack skills look there first). Requires Node 22+ (fetch + WebSocket built in). No dependencies.
+//
+// Config (env, or <repo>/.gstack/remote.json with the same names in camelCase):
+//   GSTACK_REMOTE_URL          https://<host>.ts.net/gstack          (required)
+//   GSTACK_REMOTE_KEY          gsk_...                                 (required; prefer env over the file)
+//   GSTACK_REMOTE_SESSION      pin a specific session id
+//   GSTACK_REMOTE_AUTH_PROFILE start new sessions logged in with this saved profile
+//   GSTACK_REMOTE_AUTH_STATE   ...or with this auth-state JSON file
+//   GSTACK_TUNNEL_PORTS        3000,5173  share these localhost ports with the remote browser
+//   GSTACK_REMOTE_VIEWPORT     1280x720
+//   GSTACK_REMOTE_INSECURE=1   allow http:// URLs (local testing only)
+'use strict';
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { execFileSync, spawn } = require('node:child_process');
+
+const VERSION = '0.1.0';
+const err = (m) => process.stderr.write(m.endsWith('\n') ? m : m + '\n');
+
+// ---------------------------------------------------------------- config
+function repoRoot() {
+  try { return execFileSync('git', ['rev-parse', '--show-toplevel'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); }
+  catch { return process.cwd(); }
+}
+const ROOT = repoRoot();
+const STATE_DIR = path.join(ROOT, '.gstack');
+// One session file per API key (fingerprint), so different users/keys never share a session record.
+let SESSION_FILE = path.join(STATE_DIR, 'remote-session.json');
+function useKey(key) {
+  const fp = require('node:crypto').createHash('sha256').update(key).digest('hex').slice(0, 12);
+  SESSION_FILE = path.join(STATE_DIR, `remote-session-${fp}.json`);
+}
+
+function loadConfig() {
+  let file = {};
+  const f = path.join(STATE_DIR, 'remote.json');
+  if (fs.existsSync(f)) { try { file = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch (e) { err(`browse-remote: cannot parse ${f}: ${e.message}`); } }
+  const pick = (env, key) => process.env[env] || file[key] || '';
+  const cfg = {
+    url: pick('GSTACK_REMOTE_URL', 'url').replace(/\/+$/, ''),
+    key: pick('GSTACK_REMOTE_KEY', 'key'),
+    session: pick('GSTACK_REMOTE_SESSION', 'session'),
+    authProfile: pick('GSTACK_REMOTE_AUTH_PROFILE', 'authProfile'),
+    authStateFile: pick('GSTACK_REMOTE_AUTH_STATE', 'authState'),
+    tunnelPorts: String(pick('GSTACK_TUNNEL_PORTS', 'tunnelPorts')).split(',').map((s) => Number(s.trim())).filter((n) => n > 0),
+    viewport: pick('GSTACK_REMOTE_VIEWPORT', 'viewport'),
+    insecure: pick('GSTACK_REMOTE_INSECURE', 'insecure') === '1' || file.insecure === true,
+  };
+  if (!cfg.url || !cfg.key) {
+    err('browse-remote: set GSTACK_REMOTE_URL and GSTACK_REMOTE_KEY (or .gstack/remote.json). See README.');
+    process.exit(2);
+  }
+  if (!/^https:\/\//.test(cfg.url) && !cfg.insecure) {
+    err(`browse-remote: ${cfg.url} is not https. Set GSTACK_REMOTE_INSECURE=1 only for local testing.`);
+    process.exit(2);
+  }
+  useKey(cfg.key);
+  return cfg;
+}
+
+// ---------------------------------------------------------------- HTTP
+class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+async function call(cfg, method, p, body, raw) {
+  const headers = { authorization: `Bearer ${cfg.key}`, 'user-agent': `browse-remote/${VERSION}` };
+  let payload;
+  if (raw !== undefined) { payload = raw; headers['content-type'] = 'application/octet-stream'; }
+  else if (body !== undefined) { payload = JSON.stringify(body); headers['content-type'] = 'application/json'; }
+  let res;
+  try { res = await fetch(cfg.url + p, { method, headers, body: payload }); }
+  catch (e) { throw new HttpError(0, `cannot reach ${cfg.url}: ${e.cause?.code || e.message}`); }
+  if (res.status >= 400) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).error || msg; } catch { /* not json */ }
+    throw new HttpError(res.status, msg);
+  }
+  return res;
+}
+const json = async (cfg, method, p, body) => (await call(cfg, method, p, body)).json();
+
+// ---------------------------------------------------------------- session
+function readSessionFile() { try { return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8')); } catch { return null; } }
+function writeSessionFile(v) { fs.mkdirSync(STATE_DIR, { recursive: true }); fs.writeFileSync(SESSION_FILE, JSON.stringify(v, null, 2)); }
+function clearSessionFile() { const s = readSessionFile(); if (s?.tunnelPid) { try { process.kill(s.tunnelPid); } catch { /* gone */ } } fs.rmSync(SESSION_FILE, { force: true }); }
+
+async function createSession(cfg) {
+  err(`Starting remote browser session on ${cfg.url} ...`);
+  const body = { wait: 120, viewport: cfg.viewport || undefined, label: path.basename(ROOT) };
+  if (cfg.authProfile) body.authProfile = cfg.authProfile;
+  else if (cfg.authStateFile) body.authState = fs.readFileSync(path.resolve(ROOT, cfg.authStateFile), 'utf8');
+  const r = await json(cfg, 'POST', '/api/sessions', body);
+  const s = r.session;
+  if (s.status !== 'ready') throw new HttpError(503, `remote session ${s.id} is ${s.status}${s.error ? `: ${s.error}` : ''}`);
+  if (r.authReport) {
+    const bad = r.authReport.origins.filter((o) => !o.ok);
+    err(`Logged-in state applied to ${r.authReport.origins.length} site(s)${bad.length ? `; FAILED: ${bad.map((o) => `${o.origin} (${o.error})`).join(', ')}` : ''}`);
+    for (const w of r.authReport.warnings || []) err(`  warning: ${w}`);
+  }
+  err(`Remote session ${s.id} ready.`);
+  const rec = { sessionId: s.id, url: cfg.url, createdAt: new Date().toISOString() };
+  writeSessionFile(rec);
+  if (cfg.tunnelPorts.length) { startTunnelProcess(rec); await waitTunnel(cfg, s.id); }
+  return s.id;
+}
+
+async function ensureSession(cfg) {
+  if (cfg.session) return cfg.session;
+  const rec = readSessionFile();
+  if (rec && rec.url === cfg.url) {
+    try {
+      const r = await json(cfg, 'GET', `/api/sessions/${rec.sessionId}`);
+      if (r.session.status === 'ready' || r.session.status === 'starting') {
+        if (cfg.tunnelPorts.length && (!tunnelAlive(rec) || !r.session.tunnel?.connected)) {
+          if (!tunnelAlive(rec)) startTunnelProcess(rec);
+          await waitTunnel(cfg, rec.sessionId);
+        }
+        return rec.sessionId;
+      }
+    } catch (e) { if (e.status !== 404) throw e; }
+    clearSessionFile();
+  }
+  return createSession(cfg);
+}
+
+// ---------------------------------------------------------------- tunnel (detached helper)
+/** Wait (max 10 s) until the server reports this session's tunnel as connected. */
+async function waitTunnel(cfg, id) {
+  for (let i = 0; i < 40; i++) {
+    try { const r = await json(cfg, 'GET', `/api/sessions/${id}`); if (r.session.tunnel?.connected) return true; } catch { /* retry */ }
+    await new Promise((res) => setTimeout(res, 250));
+  }
+  err(`browse-remote: the tunnel for localhost:${cfg.tunnelPorts.join(',')} did not connect; localhost URLs will fail`);
+  return false;
+}
+function tunnelAlive(rec) { if (!rec.tunnelPid) return false; try { process.kill(rec.tunnelPid, 0); return true; } catch { return false; } }
+function startTunnelProcess(rec) {
+  const child = spawn(process.execPath, [__filename, '__tunnel', rec.sessionId], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env, cwd: process.cwd() });
+  child.unref();
+  rec.tunnelPid = child.pid;
+  writeSessionFile(rec);
+}
+
+async function runTunnel(cfg, sessionId) {
+  if (typeof WebSocket === 'undefined') { err('browse-remote: the tunnel needs Node 22+'); process.exit(2); }
+  let backoff = 1000;
+  for (;;) {
+    let ticket;
+    try {
+      ticket = await json(cfg, 'POST', `/api/sessions/${sessionId}/tunnel-ticket`, { ports: cfg.tunnelPorts });
+    } catch (e) {
+      if (e.status === 404 || e.status === 401 || e.status === 403) process.exit(0);   // session gone: stop
+      await new Promise((r) => setTimeout(r, backoff)); backoff = Math.min(backoff * 2, 30000); continue;
+    }
+    const u = new URL(cfg.url);
+    const wsUrl = `${u.protocol === 'https:' ? 'wss:' : 'ws:'}//${u.host}${ticket.path}?ticket=${encodeURIComponent(ticket.ticket)}`;
+    await new Promise((resolve) => {
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      const conns = new Map();
+      ws.onopen = () => { backoff = 1000; };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') {
+          const buf = Buffer.from(ev.data);
+          const c = conns.get(buf.readUInt32BE(0));
+          if (c) c.write(buf.subarray(4));
+          return;
+        }
+        const msg = JSON.parse(ev.data);
+        if (msg.t === 'open') {
+          if (!cfg.tunnelPorts.includes(msg.port)) { ws.send(JSON.stringify({ t: 'error', id: msg.id, msg: 'port not shared' })); return; }
+          const header = Buffer.alloc(4); header.writeUInt32BE(msg.id, 0);
+          const connect = (host, fallback) => {
+            const sock = net.connect(msg.port, host);
+            sock.once('connect', () => {
+              conns.set(msg.id, sock);
+              ws.send(JSON.stringify({ t: 'opened', id: msg.id }));
+              sock.on('data', (d) => { if (ws.readyState === 1) ws.send(Buffer.concat([header, d])); });
+              sock.on('close', () => { if (conns.delete(msg.id) && ws.readyState === 1) ws.send(JSON.stringify({ t: 'close', id: msg.id })); });
+            });
+            sock.once('error', (e) => {
+              if (!conns.has(msg.id) && fallback) return connect(fallback, null);
+              if (!conns.has(msg.id)) ws.send(JSON.stringify({ t: 'error', id: msg.id, msg: `localhost:${msg.port}: ${e.code || e.message}` }));
+              sock.destroy();
+            });
+          };
+          connect('127.0.0.1', '::1');
+        } else if (msg.t === 'close') {
+          const c = conns.get(msg.id); conns.delete(msg.id); c?.end();
+        }
+      };
+      ws.onclose = () => { for (const c of conns.values()) c.destroy(); resolve(); };
+      ws.onerror = () => { /* onclose follows */ };
+    });
+    await new Promise((r) => setTimeout(r, backoff)); backoff = Math.min(backoff * 2, 30000);
+  }
+}
+
+// ---------------------------------------------------------------- argument rewriting (local paths <-> session paths)
+const IMG = /\.(png|jpe?g|webp)$/i;
+let seq = 0;
+const outDir = () => `files/o${Date.now().toString(36)}${(seq++).toString(36)}`;
+
+function positional(args, flagsWithValue) {
+  const pos = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { for (let j = i + 1; j < args.length; j++) pos.push(j); break; }
+    if (a.startsWith('-')) { if (flagsWithValue.includes(a)) i++; continue; }
+    pos.push(i);
+  }
+  return pos;
+}
+
+/** Returns { args, uploads: [{local, remote}], outputs: [{type:'file'|'dir', remote, local}] } */
+function rewrite(cmd, argsIn) {
+  const args = [...argsIn];
+  const uploads = [];
+  const outputs = [];
+  const outFile = (i, defLocal) => {
+    const local = path.resolve(i === null ? defLocal : args[i]);
+    const remote = `${outDir()}/${path.basename(local)}`;
+    if (i === null) args.push(remote); else args[i] = remote;
+    outputs.push({ type: 'file', remote, local });
+  };
+  const inFile = (i) => {
+    const local = path.resolve(args[i]);
+    if (!fs.existsSync(local)) return; // let gstack report it
+    const remote = `files/i${Date.now().toString(36)}${(seq++).toString(36)}/${path.basename(local)}`;
+    uploads.push({ local, remote });
+    args[i] = remote;
+  };
+  const flagValue = (flag, fn) => { const i = args.indexOf(flag); if (i >= 0 && i + 1 < args.length) fn(i + 1); };
+
+  switch (cmd) {
+    case 'screenshot': {
+      if (args.includes('--base64')) break;
+      const p = positional(args, ['--selector', '--clip']).find((i) => IMG.test(args[i]));
+      outFile(p ?? null, path.join(os.tmpdir(), 'browse-screenshot.png'));
+      break;
+    }
+    case 'prettyscreenshot': {
+      const p = positional(args, ['--scroll-to', '--hide']).find((i) => IMG.test(args[i]));
+      outFile(p ?? null, path.join(os.tmpdir(), 'browse-prettyscreenshot.png'));
+      break;
+    }
+    case 'pdf': {
+      flagValue('--from-file', inFile);
+      const p = positional(args, ['--format', '--width', '--height', '--margins', '--header-template', '--footer-template', '--from-file']).find((i) => /\.pdf$/i.test(args[i]));
+      if (!args.includes('--from-file')) outFile(p ?? null, path.join(os.tmpdir(), 'browse-page.pdf'));
+      break;
+    }
+    case 'archive': {
+      const p = positional(args, []).find((i) => /\.(mhtml|mht)$/i.test(args[i]));
+      outFile(p ?? null, path.join(os.tmpdir(), 'browse-archive.mhtml'));
+      break;
+    }
+    case 'responsive': {
+      const p = positional(args, [])[0];
+      const localPrefix = path.resolve(p === undefined ? path.join(os.tmpdir(), 'browse-responsive') : args[p]);
+      const dir = outDir();
+      const remotePrefix = `${dir}/${path.basename(localPrefix)}`;
+      if (p === undefined) args.push(remotePrefix); else args[p] = remotePrefix;
+      outputs.push({ type: 'dir', remote: dir, local: path.dirname(localPrefix) });
+      break;
+    }
+    case 'download': {
+      const pos = positional(args, []);
+      if (args.includes('--base64')) break;
+      if (pos.length >= 2) outFile(pos[1], null);
+      else { const dir = outDir(); args.splice(pos[0] + 1, 0, `${dir}/download`); outputs.push({ type: 'dir', remote: dir, local: process.cwd() }); }
+      break;
+    }
+    case 'scrape': {
+      const i = args.indexOf('--dir');
+      const dir = outDir();
+      const local = path.resolve(i >= 0 ? args[i + 1] : 'scrape');
+      if (i >= 0) args[i + 1] = dir; else args.push('--dir', dir);
+      outputs.push({ type: 'dir', remote: dir, local });
+      break;
+    }
+    case 'snapshot': flagValue('-o', (i) => outFile(i)); break;
+    case 'js': case 'eval': {
+      flagValue('--out', (i) => outFile(i));
+      if (cmd === 'eval') { const p = positional(args, ['--out'])[0]; if (p !== undefined) inFile(p); }
+      break;
+    }
+    case 'upload': { const pos = positional(args, []); for (const i of pos.slice(1)) inFile(i); break; }
+    case 'load-html': case 'setcontent': case 'set-content': case 'setContent': case 'cookie-import': {
+      const p = positional(args, [])[0]; if (p !== undefined) inFile(p); break;
+    }
+    default: break;
+  }
+  return { args, uploads, outputs };
+}
+
+// ---------------------------------------------------------------- client-only commands
+async function remoteAuth(cfg, sub, rest) {
+  if (sub === 'profiles') { const r = await json(cfg, 'GET', '/api/profiles'); console.log(JSON.stringify(r.profiles, null, 2)); return 0; }
+  if (sub === 'delete' && rest[0]) { await json(cfg, 'DELETE', `/api/profiles/${encodeURIComponent(rest[0])}`); console.log(`Deleted profile ${rest[0]}`); return 0; }
+  const id = await ensureSession(cfg);
+  if (sub === 'import' && rest[0]) {
+    const oi = rest.indexOf('--origin');
+    const r = await json(cfg, 'POST', `/api/sessions/${id}/auth-state`, { authState: fs.readFileSync(rest[0], 'utf8'), origin: oi >= 0 ? rest[oi + 1] : undefined });
+    return report(r.report);
+  }
+  if (sub === 'use' && rest[0]) { const r = await json(cfg, 'POST', `/api/sessions/${id}/auth-state`, { authProfile: rest[0] }); return report(r.report); }
+  if (sub === 'save' && rest[0]) {
+    const oi = rest.indexOf('--origins');
+    const r = await json(cfg, 'POST', '/api/profiles', { name: rest[0], sessionId: id, origins: oi >= 0 ? rest[oi + 1].split(',') : undefined });
+    console.log(`Saved profile ${r.profile.name}: ${r.profile.cookieCount} cookies, ${r.profile.originCount} site(s) with storage. Earliest expiry: ${r.profile.earliestExpiry || 'session cookies only'}`);
+    return 0;
+  }
+  if (sub === 'export' && rest[0]) {
+    const r = await json(cfg, 'GET', `/api/sessions/${id}/auth-state`);
+    fs.writeFileSync(rest[0], JSON.stringify(r.authState, null, 2), { mode: 0o600 });
+    console.log(`Wrote ${rest[0]} (${r.authState.cookies.length} cookies). It contains secrets: keep it out of git.`);
+    return 0;
+  }
+  err('usage: browse remote-auth import <file> [--origin URL] | use <profile> | save <profile> [--origins a,b] | export <file> | profiles | delete <profile>');
+  return 2;
+}
+function report(r) {
+  for (const o of r.origins) console.log(`${o.ok ? 'OK  ' : 'FAIL'} ${o.origin}  cookies=${o.cookies} localStorage=${o.localStorage} sessionStorage=${o.sessionStorage}${o.error ? `  ${o.error}` : ''}`);
+  for (const w of r.warnings || []) err(`warning: ${w}`);
+  return r.origins.every((o) => o.ok) ? 0 : 1;
+}
+
+// ---------------------------------------------------------------- main
+async function main() {
+  const argv = process.argv.slice(2);
+  if (argv[0] === '--version' || argv[0] === 'version') { console.log(`browse-remote ${VERSION}`); return 0; }
+  if (argv[0] === '__tunnel') { await runTunnel(loadConfig(), argv[1]); return 0; }
+  const cfg = loadConfig();
+  const [cmd, ...rest] = argv;
+  if (!cmd || cmd === 'help' || cmd === '--help') {
+    console.log(`browse-remote ${VERSION}: gstack browse on ${cfg.url}\nusage: browse <gstack command> [args]   (same commands as gstack's browse)\n       browse remote-auth import|use|save|export|profiles|delete ...\n       browse remote-status\n       browse stop   (deletes the remote session and its profile)`);
+    return 0;
+  }
+  if (cmd === 'remote-auth') return remoteAuth(cfg, rest[0], rest.slice(1));
+  if (cmd === 'remote-status') {
+    const rec = readSessionFile();
+    console.log(`REMOTE ${cfg.url}\nsession: ${rec?.sessionId ?? '(none yet)'}\ntunnel: ${cfg.tunnelPorts.length ? `${cfg.tunnelPorts.join(',')} (${rec && tunnelAlive(rec) ? 'running' : 'not running'})` : 'off'}`);
+    const me = await json(cfg, 'GET', '/api/me');
+    console.log(`user: ${me.user} (${me.role}), sessions ${me.sessions}/${me.maxSessions}; server ${me.server.active}/${me.server.max}`);
+    return 0;
+  }
+  if (cmd === 'stop') {
+    const rec = readSessionFile();
+    const id = cfg.session || rec?.sessionId;
+    if (id) { try { await json(cfg, 'DELETE', `/api/sessions/${id}`); } catch (e) { if (e.status !== 404) throw e; } }
+    clearSessionFile();
+    console.log(id ? `Stopped remote session ${id} (profile and files deleted)` : 'No remote session running');
+    return 0;
+  }
+
+  let stdin;
+  if ((cmd === 'chain' || cmd === 'batch') && !process.stdin.isTTY) stdin = fs.readFileSync(0, 'utf8');
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const id = await ensureSession(cfg);
+    const plan = rewrite(cmd, rest);
+    let nestedOutputs = [];
+    if (stdin !== undefined) {
+      try {
+        const parsed = JSON.parse(stdin);
+        const list = cmd === 'batch' ? (parsed.commands ?? parsed) : parsed;
+        for (const entry of list) {
+          if (!Array.isArray(entry)) continue;
+          const sub = rewrite(entry[0], entry.slice(1).map(String));
+          entry.splice(1, entry.length - 1, ...sub.args);
+          plan.uploads.push(...sub.uploads); nestedOutputs.push(...sub.outputs);
+        }
+        stdin = JSON.stringify(parsed);
+      } catch { /* gstack will report bad JSON */ }
+    }
+    try {
+      for (const u of plan.uploads) {
+        await call(cfg, 'PUT', `/api/sessions/${id}/${u.remote.split('/').map(encodeURIComponent).join('/')}`, undefined, fs.readFileSync(u.local));
+      }
+      const r = await json(cfg, 'POST', `/api/sessions/${id}/exec`, { command: cmd, args: plan.args, stdin });
+      let stdout = r.stdout;
+      for (const o of [...plan.outputs, ...nestedOutputs]) {
+        const produced = o.type === 'file' ? r.files.filter((f) => f === o.remote) : r.files.filter((f) => f.startsWith(o.remote + '/'));
+        for (const f of produced) {
+          const local = o.type === 'file' ? o.local : path.join(o.local, f.slice(o.remote.length + 1));
+          const res = await call(cfg, 'GET', `/api/sessions/${id}/files/${f.split('/').map(encodeURIComponent).join('/')}`);
+          fs.mkdirSync(path.dirname(local), { recursive: true });
+          fs.writeFileSync(local, Buffer.from(await res.arrayBuffer()));
+        }
+        const remoteAbs = `${r.sessionDir}/${o.remote}`;
+        const localShown = o.type === 'file' ? o.local : o.local + path.sep;
+        stdout = stdout.split(remoteAbs + (o.type === 'dir' ? '/' : '')).join(localShown).split(o.remote + (o.type === 'dir' ? '/' : '')).join(localShown);
+      }
+      process.stdout.write(stdout && !stdout.endsWith('\n') ? stdout + '\n' : stdout);
+      if (r.stderr) process.stderr.write(r.stderr.endsWith('\n') ? r.stderr : r.stderr + '\n');
+      return r.exitCode;
+    } catch (e) {
+      if (e.status === 404 && attempt === 0 && !cfg.session) { clearSessionFile(); continue; } // session expired: start a new one once
+      throw e;
+    }
+  }
+  return 1;
+}
+
+main().then((code) => process.exit(code ?? 0), (e) => { err(`browse-remote: ${e.message}`); process.exit(1); });
