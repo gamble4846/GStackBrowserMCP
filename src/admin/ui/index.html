@@ -7,83 +7,200 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="bar">
-    <div class="brand">GStack Browser <span class="muted">admin</span></div>
-    <nav id="tabs" hidden>
-      <button data-view="sessions" class="active">Sessions</button>
-      <button data-view="profiles">Auth profiles</button>
-    </nav>
-    <div class="right">
-      <span id="usage" class="muted"></span>
-      <span id="whoami" class="muted"></span>
-      <button id="logout" class="ghost" hidden>Log out</button>
-    </div>
-  </header>
-
-  <main>
-    <section id="login" class="card narrow" hidden>
-      <h1>Log in</h1>
-      <p class="muted">Use your API key. Admin keys see every session; other keys see only their own.</p>
-      <form id="loginForm">
-        <input id="key" type="password" autocomplete="off" placeholder="gsk_..." required>
-        <button type="submit">Log in</button>
+  <!-- ============ Login ============ -->
+  <section id="login" class="login" hidden>
+    <div class="login-card">
+      <div class="logo-mark" aria-hidden="true"><span></span></div>
+      <h1>GStack Browser</h1>
+      <p class="muted">Admin console. Sign in with your API key.</p>
+      <form id="loginForm" autocomplete="off">
+        <label for="key" class="field-label">API key</label>
+        <input id="key" type="password" placeholder="gsk_…" required spellcheck="false">
+        <button type="submit" class="btn primary block">Sign in</button>
       </form>
-      <p id="loginError" class="error"></p>
-    </section>
+      <p id="loginError" class="form-error" role="alert"></p>
+      <p class="fine">Admin keys see every session. Other keys see only their own.</p>
+    </div>
+  </section>
 
-    <section id="sessions" hidden>
-      <div class="row between">
-        <h1>Sessions</h1>
-        <div class="row">
-          <label class="muted">idle &gt; <input id="idleMin" type="number" value="10" min="1" class="small"> min</label>
-          <button id="killIdle" class="danger ghost">Kill idle</button>
+  <!-- ============ App ============ -->
+  <div id="app" class="shell" hidden>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo-mark small" aria-hidden="true"><span></span></div>
+        <div>
+          <div class="brand-name">GStack Browser</div>
+          <div class="brand-sub">Admin console</div>
         </div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Session</th><th>Owner</th><th>Status</th><th>URL</th><th>Cmds</th><th>Idle</th><th>Tunnel</th><th></th></tr></thead>
-          <tbody id="sessionRows"><tr><td colspan="8" class="muted">No sessions.</td></tr></tbody>
-        </table>
-      </div>
-
-      <div id="detail" class="card" hidden>
-        <div class="row between">
-          <h2 id="detailTitle"></h2>
-          <div class="row">
-            <button data-tool="console" class="ghost">Console</button>
-            <button data-tool="network" class="ghost">Network</button>
-            <button data-tool="tabs" class="ghost">Tabs</button>
-            <button id="detailKill" class="danger">Kill session</button>
-            <button id="detailClose" class="ghost">Close</button>
-          </div>
+      <nav id="tabs" class="nav">
+        <button data-view="sessions" class="nav-item active">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 8h18M8 21h8"/></svg>
+          Sessions <span id="navCount" class="nav-badge">0</span>
+        </button>
+        <button data-view="profiles" class="nav-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          Auth profiles
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="user-chip">
+          <span id="userAvatar" class="avatar"></span>
+          <div class="user-meta"><div id="whoami" class="user-name"></div><div id="whorole" class="user-role"></div></div>
         </div>
-        <div class="grid">
+        <div class="foot-actions">
+          <button id="themeToggle" class="icon-btn" title="Toggle light/dark theme" aria-label="Toggle theme">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          </button>
+          <button id="logout" class="icon-btn" title="Sign out" aria-label="Sign out">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 17l5-5-5-5M20 12H9M12 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- ---------- Sessions ---------- -->
+      <section id="sessions" class="view">
+        <header class="page-head">
           <div>
-            <h3>Live view <span id="liveState" class="muted"></span></h3>
-            <div class="live"><img id="live" alt="Live view of the session's browser"></div>
+            <h1>Sessions</h1>
+            <p class="muted">Live browsers on this server. Updates in real time.</p>
           </div>
-          <div>
-            <h3>Command timeline</h3>
-            <ol id="timeline" class="timeline"></ol>
+          <div class="head-actions">
+            <div class="inline-field">
+              <label for="idleMin">Idle over</label>
+              <input id="idleMin" type="number" value="10" min="1" class="num">
+              <span>min</span>
+            </div>
+            <button id="killIdle" class="btn danger-outline">Kill idle</button>
+          </div>
+        </header>
+
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-label">Active sessions</div>
+            <div class="stat-value"><span id="statActive">0</span><small>/ <span id="statMax">0</span></small></div>
+            <div class="meter"><span id="meterSessions"></span></div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Memory</div>
+            <div class="stat-value"><span id="statMem">0</span><small>/ <span id="statMemMax">0</span> MB</small></div>
+            <div class="meter"><span id="meterMem"></span></div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Running a command</div>
+            <div class="stat-value"><span id="statBusy">0</span></div>
+            <div class="stat-foot muted">sessions busy right now</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Laptop tunnels</div>
+            <div class="stat-value"><span id="statTunnels">0</span></div>
+            <div class="stat-foot muted">connected to localhost</div>
           </div>
         </div>
-        <pre id="toolOut" hidden></pre>
-        <h3>Files</h3>
-        <ul id="files" class="files"></ul>
-      </div>
-    </section>
 
-    <section id="profiles" hidden>
-      <h1>Auth profiles</h1>
-      <p class="muted">Saved logins are encrypted and private to their owner. Values are never shown here.</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Owner</th><th>Name</th><th>Cookies</th><th>Sites</th><th>Earliest expiry</th><th>Updated</th><th></th></tr></thead>
-          <tbody id="profileRows"></tbody>
-        </table>
+        <div class="card table-card">
+          <table class="table">
+            <thead>
+              <tr><th>Session</th><th>Owner</th><th>Status</th><th>Current page</th><th class="num-col">Cmds</th><th>Idle</th><th>Tunnel</th><th></th></tr>
+            </thead>
+            <tbody id="sessionRows"></tbody>
+          </table>
+          <div id="sessionsEmpty" class="empty" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 8h18"/></svg>
+            <div class="empty-title">No sessions running</div>
+            <div class="muted">Sessions appear here when an agent calls <code>browser_start</code> or a skill runs <code>$B</code>.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- Profiles ---------- -->
+      <section id="profiles" class="view" hidden>
+        <header class="page-head">
+          <div>
+            <h1>Auth profiles</h1>
+            <p class="muted">Saved logins, encrypted and private to their owner. Values are never shown here.</p>
+          </div>
+        </header>
+        <div class="card table-card">
+          <table class="table">
+            <thead><tr><th>Owner</th><th>Name</th><th class="num-col">Cookies</th><th class="num-col">Sites</th><th>Earliest expiry</th><th>Updated</th><th></th></tr></thead>
+            <tbody id="profileRows"></tbody>
+          </table>
+          <div id="profilesEmpty" class="empty" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+            <div class="empty-title">No saved profiles</div>
+            <div class="muted">Save one with <code>browse remote-auth save &lt;name&gt;</code> or the <code>auth_profile_save</code> tool.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============ Session drawer ============ -->
+  <div id="scrim" class="scrim" hidden></div>
+  <aside id="detail" class="drawer" hidden aria-labelledby="detailTitle">
+    <header class="drawer-head">
+      <div class="drawer-title">
+        <span id="detailStatus" class="status"></span>
+        <h2 id="detailTitle"></h2>
+        <button id="copyId" class="icon-btn tiny" title="Copy session id" aria-label="Copy session id">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+        </button>
       </div>
-    </section>
-  </main>
+      <div id="detailMeta" class="drawer-meta"></div>
+      <div class="drawer-actions">
+        <button id="detailKill" class="btn danger">Kill session</button>
+        <button id="detailClose" class="icon-btn" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="drawer-body">
+      <div class="browser-frame">
+        <div class="browser-bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <div id="liveUrl" class="address"></div>
+          <span id="liveState" class="live-state"></span>
+        </div>
+        <div class="viewport">
+          <img id="live" alt="Live view of the session's browser">
+          <div id="livePlaceholder" class="live-placeholder">Waiting for the first frame…</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="seg" role="tablist">
+          <button class="seg-btn active" data-panel="timeline">Timeline</button>
+          <button class="seg-btn" data-panel="console">Console</button>
+          <button class="seg-btn" data-panel="network">Network</button>
+          <button class="seg-btn" data-panel="tabs">Tabs</button>
+          <button class="seg-btn" data-panel="files">Files <span id="fileCount" class="seg-count"></span></button>
+        </div>
+        <div class="panel-body">
+          <ol id="timeline" class="timeline" data-pane="timeline"></ol>
+          <pre id="toolOut" class="console" data-pane="tool" hidden></pre>
+          <ul id="files" class="files" data-pane="files" hidden></ul>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ Confirm + toasts ============ -->
+  <div id="confirm" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-card">
+      <h3 id="confirmTitle"></h3>
+      <p id="confirmText" class="muted"></p>
+      <div class="modal-actions">
+        <button id="confirmNo" class="btn ghost">Cancel</button>
+        <button id="confirmYes" class="btn danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
   <script src="app.js"></script>
 </body>
 </html>
