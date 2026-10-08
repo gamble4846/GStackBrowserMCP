@@ -43,19 +43,48 @@ events.on('exec', (ev: any) => {
 events.on('session', (e: any) => { if (e.type === 'deleted') setTimeout(() => timelines.delete(e.session.id), 3600_000).unref(); });
 
 // ---- live view frames (polling mode): one screenshot at a time, never queued behind agent work ----
+// `tab` previews a specific tab: gstack's --tab-id pins the command to that tab and restores the
+// agent's active tab afterwards, so watching a tab never changes what the agent is driving.
 const frames = new Map<string, { at: number; png: Buffer }>();
-async function liveFrame(id: string, who: Principal): Promise<Buffer | null> {
+async function liveFrame(id: string, who: Principal, tab: number | null): Promise<Buffer | null> {
   const s = getSession(id, who);
-  const cached = frames.get(id);
+  const key = `${id}:${tab ?? 'active'}`;
+  const cached = frames.get(key);
   if (s.busy || s.status !== 'ready' || (cached && Date.now() - cached.at < 700)) return cached?.png ?? null;
-  const r = await execInSession(s, 'system', { command: 'screenshot', args: ['--viewport', '--base64'], via: 'admin', internal: true, quiet: true, timeoutMs: 10_000 });
+  const args = ['--viewport', '--base64', ...(tab !== null ? ['--tab-id', String(tab)] : [])];
+  const r = await execInSession(s, 'system', { command: 'screenshot', args, via: 'admin', internal: true, quiet: true, timeoutMs: 10_000 });
   const m = /data:image\/png;base64,([A-Za-z0-9+/=]+)/.exec(r.stdout);
   if (!m) return cached?.png ?? null;
   const png = Buffer.from(m[1], 'base64');
-  frames.set(id, { at: Date.now(), png });
+  frames.set(key, { at: Date.now(), png });
   return png;
 }
-events.on('session', (e: any) => { if (e.type === 'deleted') frames.delete(e.session.id); });
+
+// ---- tab list (parsed from gstack `tabs`: "→ [2] Title — https://url" ; → marks the active tab) ----
+interface TabInfo { id: number; title: string; url: string; active: boolean }
+const tabCache = new Map<string, { at: number; tabs: TabInfo[] }>();
+export function parseTabs(out: string): TabInfo[] {
+  const tabs: TabInfo[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = /^(→\s*|\s*)\[(\d+)\]\s(.*?)\s—\s(\S+)\s*$/.exec(line);
+    if (m) tabs.push({ id: Number(m[2]), active: m[1].includes('→'), title: m[3] === '(untitled)' ? '' : m[3], url: m[4] });
+  }
+  return tabs;
+}
+async function listTabs(id: string, who: Principal): Promise<TabInfo[]> {
+  const s = getSession(id, who);
+  const cached = tabCache.get(id);
+  if (s.busy || s.status !== 'ready' || (cached && Date.now() - cached.at < 1500)) return cached?.tabs ?? [];
+  const r = await execInSession(s, 'system', { command: 'tabs', args: [], via: 'admin', internal: true, quiet: true, timeoutMs: 10_000 });
+  const tabs = r.exitCode === 0 ? parseTabs(r.stdout) : cached?.tabs ?? [];
+  tabCache.set(id, { at: Date.now(), tabs });
+  return tabs;
+}
+events.on('session', (e: any) => {
+  if (e.type !== 'deleted') return;
+  tabCache.delete(e.session.id);
+  for (const k of frames.keys()) if (k.startsWith(`${e.session.id}:`)) frames.delete(k);
+});
 
 function canSee(who: Principal, owner: string): boolean { return who.role === 'admin' || who.user === owner; }
 
@@ -115,9 +144,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const sub = m[2] ?? '';
       if (sub === '' && method === 'DELETE') { await deleteSession(s.id, who, `killed in admin UI by ${who.user}`); sendJson(res, 200, { deleted: s.id }); return; }
       if (sub === '/timeline') { sendJson(res, 200, { timeline: timelines.get(s.id) ?? [] }); return; }
+      if (sub === '/tabs.json') { sendJson(res, 200, { tabs: await listTabs(s.id, who) }); return; }
       if (sub === '/live.png') {
         if (config.liveViewMode === 'off') { res.writeHead(204).end(); return; }
-        const png = await liveFrame(s.id, who);
+        const t = url.searchParams.get('tab');
+        if (t !== null && !/^\d{1,6}$/.test(t)) throw new SessionError(400, 'tab must be a tab id');
+        const png = await liveFrame(s.id, who, t === null ? null : Number(t));
         if (!png) { res.writeHead(204).end(); return; }
         res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store', 'content-length': png.length });
         res.end(png);

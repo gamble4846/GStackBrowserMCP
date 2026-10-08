@@ -107,6 +107,15 @@ SIDA=$($B remote-status 2>/dev/null | sed -n 's/^session: \(gs_[a-z0-9x]*\).*/\1
 check "admin lists live sessions" bash -c "curl -s -b /tmp/adm.jar $ADMIN/api/sessions | grep -q '$SIDA'"
 check "admin timeline has commands" bash -c "curl -s -b /tmp/adm.jar $ADMIN/api/sessions/$SIDA/timeline | grep -q '\"command\":\"goto\"'"
 check "admin live view returns a PNG" bash -c "curl -s -b /tmp/adm.jar $ADMIN/api/sessions/$SIDA/live.png | head -c 8 | od -An -tx1 | grep -q '89 50 4e 47'"
+$B newtab https://example.org >/dev/null 2>&1
+TABS=$(curl -s -b /tmp/adm.jar $ADMIN/api/sessions/$SIDA/tabs.json)
+check "admin lists every browser tab" bash -c "[ \$(grep -o '\"id\":' <<<'$TABS' | wc -l) -ge 2 ]"
+FIRST=$(grep -o '"id":[0-9]*' <<<"$TABS" | head -1 | cut -d: -f2)
+ACTIVE=$(grep -o '"id":[0-9]*,"active":true' <<<"$TABS" | grep -o '[0-9]*' | head -1); [ -n "$ACTIVE" ] || ACTIVE=$(grep -o '{[^}]*"active":true[^}]*}' <<<"$TABS" | grep -o '"id":[0-9]*' | cut -d: -f2)
+check "admin previews a non-active tab" bash -c "curl -s -b /tmp/adm.jar '$ADMIN/api/sessions/$SIDA/live.png?tab=$FIRST' | head -c 8 | od -An -tx1 | grep -q '89 50 4e 47'"
+sleep 2
+AFTER=$(curl -s -b /tmp/adm.jar $ADMIN/api/sessions/$SIDA/tabs.json | grep -o '{[^}]*"active":true[^}]*}' | grep -o '"id":[0-9]*' | cut -d: -f2)
+check "previewing a tab does not change the agent's active tab" bash -c "[ -n '$ACTIVE' ] && [ '$ACTIVE' = '$AFTER' ] && [ '$ACTIVE' != '$FIRST' ]"
 check "admin kill requires CSRF header" bash -c "curl -s -b /tmp/adm.jar -X DELETE $ADMIN/api/sessions/$SIDA | grep -q 'x-requested-with'"
 check "admin kill works" bash -c "curl -s -b /tmp/adm.jar -X DELETE -H 'x-requested-with: gstack-admin' $ADMIN/api/sessions/$SIDA | grep -q deleted"
 check "second user cannot log into admin as admin" bash -c "curl -s -H 'content-type: application/json' -d '{\"key\":\"$KEY2\"}' $ADMIN/login | grep -q '\"role\":\"user\"'"

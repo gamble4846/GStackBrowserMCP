@@ -176,7 +176,7 @@ function renderDetailHead() {
     s.tunnel?.connected ? el('span', {}, 'Tunnel ', el('b', {}, `localhost:${s.tunnel.ports.join(', ')}`)) : null,
     s.label ? el('span', {}, 'Label ', el('b', {}, s.label)) : null,
   ].filter(Boolean));
-  $('liveUrl').textContent = s.currentUrl;
+  if (!tabs.length) $('liveUrl').textContent = s.currentUrl;
 }
 async function openDetail(id) {
   openId = id;
@@ -236,32 +236,132 @@ async function refreshFiles() {
   } catch { /* drawer may have closed */ }
 }
 
-// ---------- live view (polling) ----------
+// ---------- live view (polling) + browser tabs ----------
+// viewTab = null  → follow the agent's active tab (default)
+// viewTab = <id>  → pinned to that tab (gstack --tab-id; the agent's active tab is not changed)
+let tabs = [];
+let viewTab = null;
+let gridMode = false;
+let tabsTimer = null;
+let gridCursor = 0;
+
+const agentTab = () => tabs.find((t) => t.active) || null;
+const shownTab = () => (viewTab !== null ? tabs.find((t) => t.id === viewTab) : agentTab()) || null;
+function swapImg(img, blob) {
+  const url = URL.createObjectURL(blob);
+  const old = img.src; img.src = url;
+  if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+}
+function tabFav(url) {
+  let host = url; try { host = new URL(url).host || url; } catch { /* about:blank */ }
+  const f = el('span', { class: 'fav' }, (host[0] || '?').toUpperCase());
+  f.style.background = `hsl(${hue(host)} 55% 52%)`;
+  return f;
+}
+const tabLabel = (t) => t.title || (() => { try { return new URL(t.url).host || t.url; } catch { return t.url; } })();
+
+function renderTabs() {
+  const shown = shownTab();
+  $('tabstrip').replaceChildren(...tabs.map((t) => el('button', {
+    class: `tab-pill${!gridMode && shown && t.id === shown.id ? ' shown' : ''}`, role: 'tab', title: `${tabLabel(t)}\n${t.url}`,
+    onclick: () => selectTab(t.id),
+  }, tabFav(t.url), el('span', { class: 't-title' }, tabLabel(t)), t.active ? el('span', { class: 'agent-badge', title: "The agent's current tab" }, 'agent') : null)));
+  $('gridToggle').setAttribute('aria-pressed', String(gridMode));
+  $('gridToggle').querySelector('span').textContent = tabs.length > 1 ? `All tabs (${tabs.length})` : 'All tabs';
+  $('liveUrl').textContent = gridMode ? `${tabs.length} tab${tabs.length === 1 ? '' : 's'}` : (shown?.url ?? sessions.get(openId)?.currentUrl ?? '');
+  const vm = $('viewMode');
+  if (gridMode) { vm.className = 'view-mode'; vm.textContent = 'grid'; }
+  else if (viewTab !== null) { vm.className = 'view-mode pinned'; vm.textContent = `pinned · tab ${viewTab}`; vm.title = 'Click the agent tab to follow the agent again'; }
+  else { vm.className = 'view-mode'; vm.textContent = 'following agent'; vm.title = ''; }
+  $('viewportSingle').hidden = gridMode;
+  $('tabGrid').hidden = !gridMode;
+  if (gridMode) renderGrid();
+}
+function renderGrid() {
+  const grid = $('tabGrid');
+  const have = new Map([...grid.children].map((c) => [Number(c.dataset.tab), c]));
+  const cards = tabs.map((t) => {
+    const card = have.get(t.id) || el('button', { class: 'tab-card', 'data-tab': t.id, onclick: () => selectTab(t.id, true) },
+      el('div', { class: 'tab-thumb' }, el('span', {}, 'Loading…'), el('img', { alt: '' })),
+      el('div', { class: 'tab-meta' }, el('div', { class: 'row1' }), el('div', { class: 't-url' })));
+    card.classList.toggle('is-agent', t.active);
+    card.querySelector('.row1').replaceChildren(tabFav(t.url), el('span', { class: 't-title' }, tabLabel(t)), t.active ? el('span', { class: 'agent-badge' }, 'agent') : '');
+    card.querySelector('.t-url').textContent = t.url;
+    card.querySelector('img').alt = `Live view of tab ${t.id}: ${tabLabel(t)}`;
+    return card;
+  });
+  grid.replaceChildren(...cards);
+}
+function selectTab(id, leaveGrid = false) {
+  const t = tabs.find((x) => x.id === id);
+  viewTab = !t || t.active ? null : id;          // clicking the agent's tab = follow the agent again
+  const wasGrid = gridMode;
+  if (leaveGrid) gridMode = false;
+  $('live').removeAttribute('src'); $('livePlaceholder').hidden = false;
+  renderTabs();
+  if (wasGrid !== gridMode || openId) startFrameLoop();
+}
+async function refreshTabs() {
+  if (!openId) return;
+  try {
+    const r = await api(`/api/sessions/${openId}/tabs.json`);
+    if (!r.tabs.length && tabs.length) return;     // session busy: keep the last list
+    tabs = r.tabs;
+    if (viewTab !== null && !tabs.some((t) => t.id === viewTab)) { viewTab = null; toast('That tab was closed; following the agent again'); }
+    renderTabs();
+  } catch { /* drawer may have closed */ }
+}
+
 function startLive() {
   stopLive();
+  tabs = []; viewTab = null; gridMode = false; gridCursor = 0;
+  $('tabGrid').replaceChildren();
+  renderTabs();
+  refreshTabs();
+  tabsTimer = setInterval(refreshTabs, 2000);
+  startFrameLoop();
+}
+function startFrameLoop() {
+  clearInterval(liveTimer); liveTimer = null;
   const state = $('liveState');
   if (me.liveView === 'off') { state.className = 'live-state'; state.textContent = 'Live view off'; return; }
-  const img = $('live');
   let inflight = false;
+  const fetchFrame = (tab) => fetch(`/api/sessions/${openId}/live.png?t=${Date.now()}${tab !== null && tab !== undefined ? `&tab=${tab}` : ''}`, { credentials: 'same-origin' });
   const tick = async () => {
     if (!openId || inflight || document.hidden) return;
     inflight = true;
     try {
-      const res = await fetch(`/api/sessions/${openId}/live.png?t=${Date.now()}`, { credentials: 'same-origin' });
-      if (res.status === 200) {
-        const url = URL.createObjectURL(await res.blob());
-        const old = img.src; img.src = url; if (old.startsWith('blob:')) URL.revokeObjectURL(old);
-        $('livePlaceholder').hidden = true;
+      if (gridMode) {
+        // one thumbnail per tick, round-robin, so N tabs never means N screenshots at once
+        if (tabs.length) {
+          const t = tabs[gridCursor++ % tabs.length];
+          const res = await fetchFrame(t.id);
+          const card = $('tabGrid').querySelector(`[data-tab="${t.id}"]`);
+          if (res.status === 200 && card) { swapImg(card.querySelector('img'), await res.blob()); card.querySelector('.tab-thumb span').textContent = ''; }
+        }
         state.className = 'live-state on'; state.textContent = 'Live';
-      } else if (res.status === 204) { state.className = 'live-state'; state.textContent = 'Busy…'; }
-      else { state.className = 'live-state'; state.textContent = 'Unavailable'; }
+      } else {
+        const res = await fetchFrame(viewTab);
+        if (res.status === 200) {
+          swapImg($('live'), await res.blob());
+          $('livePlaceholder').hidden = true;
+          state.className = 'live-state on'; state.textContent = 'Live';
+        } else if (res.status === 204) { state.className = 'live-state'; state.textContent = 'Busy…'; }
+        else { state.className = 'live-state'; state.textContent = 'Unavailable'; }
+      }
     } catch { state.className = 'live-state'; state.textContent = 'Offline'; }
     inflight = false;
   };
   tick();
-  liveTimer = setInterval(tick, 1000);
+  liveTimer = setInterval(tick, gridMode ? 700 : 1000);
 }
-function stopLive() { clearInterval(liveTimer); liveTimer = null; }
+function stopLive() { clearInterval(liveTimer); clearInterval(tabsTimer); liveTimer = null; tabsTimer = null; }
+$('gridToggle').addEventListener('click', () => {
+  gridMode = !gridMode;
+  renderTabs();
+  startFrameLoop();
+});
+
 
 // ---------- server events ----------
 function connectEvents() {
@@ -280,6 +380,7 @@ function connectEvents() {
     tl.querySelector('.empty')?.remove();
     tl.prepend(tlItem({ ...ev, ts: new Date().toISOString() }, true));
     if (/screenshot|pdf|responsive|download|archive|scrape/.test(ev.command)) refreshFiles();
+    if (/^(newtab|closetab|tab|goto|back|forward|reload|click|chain|batch)$/.test(ev.command)) refreshTabs();
   });
   es.onerror = () => setTimeout(() => { if (me) refreshSessions().catch(() => {}); }, 2000);
 }

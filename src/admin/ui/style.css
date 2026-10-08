@@ -191,6 +191,33 @@ input.num { width: 64px; height: 34px; text-align: center; }
 .drawer-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); gap: 18px; padding: 18px 22px 22px; overflow: auto; }
 
 .browser-frame { display: flex; flex-direction: column; min-height: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; align-self: start; }
+/* tab strip (Chrome-like) */
+.tabstrip { display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px 0; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.tabs-row { display: flex; align-items: flex-end; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.tab-pill { position: relative; display: flex; align-items: center; gap: 7px; min-width: 120px; max-width: 220px; height: 34px; padding: 0 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 9px 9px 0 0; background: transparent; color: var(--muted); font: 500 12.5px var(--sans); cursor: pointer; flex: 0 1 auto; }
+.tab-pill:hover { background: color-mix(in srgb, var(--surface) 60%, transparent); color: var(--text); }
+.tab-pill.shown { background: var(--surface); border-color: var(--border); color: var(--text); margin-bottom: -1px; height: 35px; }
+.tab-pill .t-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.tab-pill .fav { width: 16px; height: 16px; font-size: 9px; border-radius: 4px; }
+.agent-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; background: var(--ok-soft); color: var(--ok-text); }
+.agent-badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.grid-toggle { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 30px; margin-bottom: 4px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-2); font: 500 12.5px var(--sans); cursor: pointer; }
+.grid-toggle svg { width: 15px; height: 15px; }
+.grid-toggle:hover { color: var(--text); }
+.grid-toggle[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.view-mode { flex: none; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.view-mode.pinned { background: var(--warn-soft); border-color: transparent; color: var(--warn-text); }
+.tab-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; padding: 12px; background: var(--surface-2); max-height: 70vh; overflow: auto; }
+.tab-card { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; cursor: pointer; text-align: left; padding: 0; font: inherit; color: inherit; transition: border-color .15s, box-shadow .15s, transform .1s; }
+.tab-card:hover { border-color: var(--accent); box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--accent) 50%, transparent); transform: translateY(-1px); }
+.tab-card.is-agent { border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
+.tab-thumb { position: relative; aspect-ratio: 16 / 10; background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface) 0% 50%) 50% / 14px 14px; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.tab-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top; background: #fff; }
+.tab-meta { display: grid; gap: 2px; padding: 8px 10px; border-top: 1px solid var(--border); }
+.tab-meta .row1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tab-meta .t-title { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tab-meta .t-url { font: 11.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .browser-bar { display: flex; align-items: center; gap: 12px; padding: 9px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .dots { display: flex; gap: 6px; } .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--border-strong); }
 .dots i:nth-child(1) { background: #f97066; } .dots i:nth-child(2) { background: #fdb022; } .dots i:nth-child(3) { background: #32d583; }

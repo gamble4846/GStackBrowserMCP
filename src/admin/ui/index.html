@@ -160,15 +160,24 @@
 
     <div class="drawer-body">
       <div class="browser-frame">
+        <div class="tabstrip">
+          <div id="tabstrip" class="tabs-row" role="tablist" aria-label="Browser tabs"></div>
+          <button id="gridToggle" class="grid-toggle" title="Show all tabs at once" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+            <span>All tabs</span>
+          </button>
+        </div>
         <div class="browser-bar">
           <span class="dots"><i></i><i></i><i></i></span>
           <div id="liveUrl" class="address"></div>
+          <span id="viewMode" class="view-mode"></span>
           <span id="liveState" class="live-state"></span>
         </div>
-        <div class="viewport">
-          <img id="live" alt="Live view of the session's browser">
+        <div id="viewportSingle" class="viewport">
+          <img id="live" alt="Live view of the selected tab">
           <div id="livePlaceholder" class="live-placeholder">Waiting for the first frame…</div>
         </div>
+        <div id="tabGrid" class="tab-grid" hidden></div>
       </div>
 
       <div class="panel">
